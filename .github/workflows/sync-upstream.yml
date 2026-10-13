@@ -1,12 +1,12 @@
 name: Sync with upstream DXVK
 
-# Merges upstream master into st0ny-main once a day. The push triggers the
+# Merges upstream master into st0ny-main three times a day, every 8 hours. The push triggers the
 # release workflow, which creates a release when upstream has released a new
 # version. Merge conflicts are reported in an issue assigned to the owner.
 
 on:
   schedule:
-    - cron: '17 4 * * *'
+    - cron: '17 */8 * * *'
   workflow_dispatch:
 
 concurrency:
