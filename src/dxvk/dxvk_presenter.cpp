@@ -203,8 +203,6 @@ namespace dxvk {
     bool isFifoMode = m_presentMode == VK_PRESENT_MODE_FIFO_KHR
                    || m_presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
 
-    bool waitForPresent = m_hasPresentWait && isFifoMode;
-
     uint64_t frameTargetTime = 0u;
 
     VkPresentTimingInfoEXT timingInfo = { VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT };
@@ -229,10 +227,6 @@ namespace dxvk {
 
         if (m_timingDisplayInfo && !m_timingDisplayInfo->isVariableRefresh)
           timingInfo.flags |= VK_PRESENT_TIMING_INFO_PRESENT_AT_NEAREST_REFRESH_CYCLE_BIT_EXT;
-
-        // Skip present_wait in fixed refresh mode if the frame is timed
-        if (!m_timingDisplayInfo || !m_timingDisplayInfo->isVariableRefresh)
-          waitForPresent = waitForPresent && !timingInfo.targetTime;
       }
     }
 
@@ -304,8 +298,6 @@ namespace dxvk {
     frame.targetTime = frameTargetTime;
     frame.targetDeadline = frameTargetTime ? frameTargetTime + m_timingMode.frameIntervalNs : 0u;
     frame.timingDomainId = timingInfo.timeDomainId;
-    frame.isTimed = bool(timingInfo.targetTime);
-    frame.doWait = waitForPresent;
 
     pushFrame(frame);
 
@@ -878,6 +870,9 @@ namespace dxvk {
       "\n  Timing:          ", (m_timingMode.supportsAbsolute
         ? (m_timingMode.supportsRelative ? "yes (absolute, relative)" : "yes (absolute)")
         : (m_timingMode.supportsRelative ? "yes (relative)" : "no"))));
+
+    if (m_timingMode.presentStage)
+      Logger::info(str::format("Presenter: Using present stage ", VkPresentStageFlagBitsEXT(m_timingMode.presentStage)));
 
     if ((status = m_vkd->vkCreateSwapchainKHR(m_vkd->device(), &swapInfo, nullptr, &m_swapchain))) {
       Logger::err(str::format("Presenter: Failed to create Vulkan swapchain: ", status));
@@ -2085,7 +2080,16 @@ namespace dxvk {
       // If the present operation has succeeded, actually wait for it to complete.
       // Don't bother with it on MAILBOX / IMMEDIATE modes since doing so would
       // restrict us to the display refresh rate on some platforms (XWayland).
-      if (frame.result >= 0 && frame.doWait) {
+      // Also don't do this if present timing is enabled because we will wait
+      // for the target present time anyway.
+      bool waited = updatePresentTiming(frame.frameId)
+        && frame.targetTime
+        && waitUntilFrameTargetTime(frame);
+
+      bool isFifoMode = m_presentMode == VK_PRESENT_MODE_FIFO_KHR
+                     || m_presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+
+      if (!waited && isFifoMode && frame.result >= 0 && m_hasPresentWait) {
         VkResult vr;
 
         if (m_device->features().khrPresentWait2.presentWait2) {
@@ -2113,10 +2117,6 @@ namespace dxvk {
       // Apply FPS limiter here to align it as closely with scanout as we can,
       // and delay signaling the frame latency event to emulate behaviour of a
       // low refresh rate display as closely as we can.
-      bool waited = updatePresentTiming(frame.frameId)
-        && frame.isTimed && frame.targetTime
-        && waitUntilFrameTargetTime(frame);
-
       if (!waited)
         m_fpsLimiter.delay();
 
