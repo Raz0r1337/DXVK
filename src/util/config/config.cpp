@@ -43,7 +43,7 @@ namespace dxvk {
     }} },
     /* World of Warcraft                           *
      * Bugs out on some multi-gpu systems.         */
-    { R"(\\Wow(Classic)?\.exe$)", {{
+    { R"(\\Wow(Classic|64)?\.exe$)", {{
       { "dxvk.hideIntegratedGraphics",      "True" },
     }} },
     /* Bright Memory - Will choose other vendors   *
