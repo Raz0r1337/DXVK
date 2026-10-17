@@ -14,6 +14,7 @@ A fork of [DXVK](https://github.com/doitsujin/dxvk) with the following modificat
    - `3`: triple size
    - `4`: quadruple size
 4. **Descriptor update templates are enabled.** DXVK uses descriptor update templates in 32-bit games again, as it did up to DXVK 3.0.2, which avoids stutter caused by CPU overhead, especially on Wine. If they cause problems, add the line `dxvk.enableDescriptorUpdateTemplates = False` to `dxvk.conf`.
+5. **`Wow64.exe` is treated like `Wow.exe`.** DXVK's World of Warcraft profile, which keeps it from choosing the integrated GPU on systems that also have a dedicated one, applies to the 64-bit `Wow64.exe` as well.
 
 Releases of this fork can be found [here](https://github.com/Raz0r1337/dxvk/releases). They contain two zip archives with only the `d3d9.dll`, `DXVK-WoW-x86.zip` for the 32-bit `Wow.exe` and `DXVK-WoW-x64.zip` for the 64-bit `Wow64.exe`. The `d3d9.dll` goes into the WoW directory next to the game executable.
 
