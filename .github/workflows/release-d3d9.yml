@@ -297,11 +297,11 @@ jobs:
           echo
           echo "Perfect for Stormhand's Project Reforged and Trimitor's WotLK 3.3.5a HD Client."
           echo
-          echo "This release contains the d3d9.dll for 32-bit (x86) and 64-bit (x64) games, built from upstream DXVK $TAG with the following modifications:"
+          echo "This release contains the d3d9.dll for the 32-bit \`Wow.exe\` (x86) and the 64-bit \`Wow64.exe\` (x64), built from upstream DXVK $TAG with the following modifications:"
           cat mods.md
           echo "## Installation"
           echo
-          echo "1. Download \`$ZIP_X86\` for a 32-bit game executable like the original clients of WoW 1.12 and 3.3.5a, or \`$ZIP_X64\` for a 64-bit one, and extract \`d3d9.dll\` into your WoW directory, next to the game executable."
+          echo "1. Download \`$ZIP_X86\` for \`Wow.exe\` or \`$ZIP_X64\` for \`Wow64.exe\`, and extract \`d3d9.dll\` into your WoW directory, next to the game executable."
           echo '2. Optional: create `WTF/dxvk.conf` to change settings, e.g. `d3d9.enlargeHardwareCursor = 1` for the original cursor size.'
           echo '3. To uninstall, delete `d3d9.dll` from the WoW directory.'
           echo
