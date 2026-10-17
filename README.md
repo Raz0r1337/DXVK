@@ -15,7 +15,7 @@ A fork of [DXVK](https://github.com/doitsujin/dxvk) with the following modificat
    - `4`: quadruple size
 4. **Descriptor update templates are enabled.** DXVK uses descriptor update templates in 32-bit games again, as it did up to DXVK 3.0.2, which avoids stutter caused by CPU overhead, especially on Wine. If they cause problems, add the line `dxvk.enableDescriptorUpdateTemplates = False` to `dxvk.conf`.
 
-Releases of this fork can be found [here](https://github.com/Raz0r1337/dxvk/releases). They contain a zip archive with only the 32-bit `d3d9.dll`, which goes into the WoW directory next to the game executable.
+Releases of this fork can be found [here](https://github.com/Raz0r1337/dxvk/releases). They contain two zip archives with only the `d3d9.dll`, `DXVK-WoW-x86.zip` for 32-bit games like the original clients of WoW 1.12 and 3.3.5a and `DXVK-WoW-x64.zip` for 64-bit games. The `d3d9.dll` goes into the WoW directory next to the game executable.
 
 DXVK is a Vulkan-based translation layer for Direct3D 8/9/10/11 which allows running 3D applications on Linux using Wine.
 

@@ -15,7 +15,7 @@ on:
         type: string
         default: ''
       notes_only:
-        description: Only update title, notes and zip name, keep the published d3d9.dll
+        description: Only update title and notes, keep the published zip archives
         type: boolean
         default: false
       recreate:
@@ -30,7 +30,8 @@ concurrency:
 env:
   UPSTREAM: doitsujin/dxvk
   # No spaces: GitHub replaces them with dots in asset names
-  ZIP_FILE: DXVK-WoW.zip
+  ZIP_X86: DXVK-WoW-x86.zip
+  ZIP_X64: DXVK-WoW-x64.zip
 
 jobs:
   prepare:
@@ -211,7 +212,7 @@ jobs:
           git push origin --delete "port/$TAG"
         fi
 
-  build-d3d9-x32:
+  build-d3d9:
     runs-on: ubuntu-latest
     needs: [prepare, tag]
     if: ${{ needs.prepare.outputs.action == 'release' }}
@@ -234,19 +235,21 @@ jobs:
       env:
         TAG: ${{ needs.prepare.outputs.tag }}
       run: |
-        ./package-release.sh "$TAG" build --no-package --32-only
-        cp "build/dxvk-$TAG/x32/d3d9.dll" d3d9.dll
+        ./package-release.sh "$TAG" build --no-package
+        mkdir -p dll/x32 dll/x64
+        cp "build/dxvk-$TAG/x32/d3d9.dll" dll/x32/
+        cp "build/dxvk-$TAG/x64/d3d9.dll" dll/x64/
 
     - name: Upload d3d9.dll
       uses: actions/upload-artifact@v7
       with:
-        name: d3d9-x32
-        path: d3d9.dll
+        name: d3d9
+        path: dll
         if-no-files-found: error
 
   release:
     runs-on: ubuntu-latest
-    needs: [prepare, build-d3d9-x32]
+    needs: [prepare, build-d3d9]
     # Also run when the build was skipped for a notes-only update
     if: ${{ !failure() && !cancelled() && (needs.prepare.outputs.action == 'release' || needs.prepare.outputs.action == 'notes') }}
     permissions:
@@ -269,7 +272,7 @@ jobs:
       if: ${{ needs.prepare.outputs.action == 'release' }}
       uses: actions/download-artifact@v7
       with:
-        name: d3d9-x32
+        name: d3d9
         path: build
 
     - name: Write release notes
@@ -294,11 +297,11 @@ jobs:
           echo
           echo "Perfect for Stormhand's Project Reforged and Trimitor's WotLK 3.3.5a HD Client."
           echo
-          echo "This release contains the 32-bit d3d9.dll, built from upstream DXVK $TAG with the following modifications:"
+          echo "This release contains the d3d9.dll for 32-bit (x86) and 64-bit (x64) games, built from upstream DXVK $TAG with the following modifications:"
           cat mods.md
           echo "## Installation"
           echo
-          echo "1. Download \`$ZIP_FILE\` and extract \`d3d9.dll\` into your WoW directory, next to the game executable."
+          echo "1. Download \`$ZIP_X86\` for a 32-bit game executable like the original clients of WoW 1.12 and 3.3.5a, or \`$ZIP_X64\` for a 64-bit one, and extract \`d3d9.dll\` into your WoW directory, next to the game executable."
           echo '2. Optional: create `WTF/dxvk.conf` to change settings, e.g. `d3d9.enlargeHardwareCursor = 1` for the original cursor size.'
           echo '3. To uninstall, delete `d3d9.dll` from the WoW directory.'
           echo
@@ -339,31 +342,28 @@ jobs:
           exit 1
         fi
 
-        # Zip archives on the release other than the current one
-        old_zips() {
-          gh api "repos/$GH_REPO/releases/tags/$TAG" \
-            --jq '.assets[] | select((.name | endswith(".zip")) and .name != env.ZIP_FILE) | .id'
-        }
-
         if [ "$NOTES_ONLY" = "true" ]; then
-          for id in $(old_zips); do
-            gh api -X PATCH "repos/$GH_REPO/releases/assets/$id" -f name="$ZIP_FILE" > /dev/null
-          done
           exit 0
         fi
 
-        mkdir pkg
-        cp build/d3d9.dll pkg/
-        (cd pkg && zip "../$ZIP_FILE" d3d9.dll)
+        # Zip archives on the release other than the current ones
+        old_zips() {
+          gh api "repos/$GH_REPO/releases/tags/$TAG" \
+            --jq '.assets[] | select((.name | endswith(".zip")) and .name != env.ZIP_X86 and .name != env.ZIP_X64) | .id'
+        }
+
+        # Each archive contains only the d3d9.dll of its architecture
+        (cd build/x32 && zip "$GITHUB_WORKSPACE/$ZIP_X86" d3d9.dll)
+        (cd build/x64 && zip "$GITHUB_WORKSPACE/$ZIP_X64" d3d9.dll)
 
         if gh release view "$TAG" > /dev/null 2>&1; then
-          gh release upload "$TAG" "$ZIP_FILE" --clobber
+          gh release upload "$TAG" "$ZIP_X86" "$ZIP_X64" --clobber
 
           for id in $(old_zips); do
             gh api -X DELETE "repos/$GH_REPO/releases/assets/$id"
           done
         else
-          gh release create "$TAG" "$ZIP_FILE" \
+          gh release create "$TAG" "$ZIP_X86" "$ZIP_X64" \
             --verify-tag \
             --latest="$LATEST" \
             --title "$title" \
