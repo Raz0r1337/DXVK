@@ -886,7 +886,7 @@ namespace dxvk {
           SpirvCodeBuffer&          code,
           SpirvInstruction&         entryPoint,
           uint32_t                  varId) {
-    uint32_t argIdx = 2 + code.strLen(entryPoint.chr(2));
+    uint32_t argIdx = 3 + code.strLen(entryPoint.chr(3));
 
     while (argIdx < entryPoint.length()) {
       if (entryPoint.arg(argIdx) == varId) {
@@ -1128,7 +1128,7 @@ namespace dxvk {
           accessChainIds.insert({ ins.arg(2), depth });
         } else {
           // Access chains derived from the variable
-          auto entry = accessChainIds.find(ins.arg(2));
+          auto entry = accessChainIds.find(ins.arg(3));
           if (entry != accessChainIds.end()) {
             depth += entry->second;
             ins.setArg(1, privateTypes.at(depth).first);
