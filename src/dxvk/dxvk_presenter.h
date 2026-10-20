@@ -13,6 +13,7 @@
 #include "../util/util_string.h"
 
 #include "../util/sync/sync_signal.h"
+#include "../util/sync/sync_ticketlock.h"
 
 #include "../vulkan/vulkan_loader.h"
 
@@ -63,6 +64,7 @@ namespace dxvk {
     uint64_t                targetTime      = 0u;
     uint64_t                targetDeadline  = 0u;
     uint64_t                timingDomainId  = 0u;
+    VkPresentStageFlagsEXT  stageQueries    = 0u;
   };
 
   /**
@@ -146,8 +148,7 @@ namespace dxvk {
    * window system integration.
    */
   class Presenter : public RcObject {
-    static constexpr size_t FrameQueueSize = 32u;
-    static constexpr size_t MaxFrameQueueSize = 256u;
+    static constexpr size_t FrameQueueSize = 64u;
   public:
 
     Presenter(
@@ -413,20 +414,23 @@ namespace dxvk {
     uint64_t                    m_lastCompleted = 0u;
 
     alignas(CACHE_LINE_SIZE)
-    dxvk::mutex                             m_timingMutex;
+    sync::TicketLock                        m_timingMutex;
 
     std::optional<PresenterTimeDomainInfo>  m_timingDomains;
     std::optional<PresenterDisplayInfo>     m_timingDisplayInfo;
     PresenterTimingInfo                     m_timingMode = { };
     PresenterTimingFeedback                 m_timingFeedback = {};
-    uint32_t                                m_timingQueueSize = FrameQueueSize;
 
     double                      m_frameRateLimit = 0.0;
+
+    uint64_t                    m_reportQueueAddId = 0u;
+    uint64_t                    m_reportQueueTakeId = 0u;
 
     alignas(CACHE_LINE_SIZE)
     FpsLimiter                  m_fpsLimiter;
 
     bool                        m_hasGamescopeFenceSignalBug = false;
+    bool                        m_hasNvidiaFenceSignalBug = false;
 
     static const std::array<std::pair<VkColorSpaceKHR, VkColorSpaceKHR>, 2> s_colorSpaceFallbacks;
 
@@ -482,9 +486,11 @@ namespace dxvk {
 
     bool recalibrateTimeDomains();
 
-    bool updatePresentTiming(uint64_t frameId);
+    PresenterTimingFeedback updatePresentTimingFeedback(
+            uint64_t                  frameId,
+            VkPresentStageFlagsEXT    queryStages);
 
-    void commitTimingFeedback(
+    PresenterTimingFeedback commitTimingFeedback(
       const PresenterTimingFeedback&  feedback);
 
     bool waitUntilFrameTargetTime(
