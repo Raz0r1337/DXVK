@@ -224,13 +224,20 @@ namespace dxvk {
       std::lock_guard lock(m_timingMutex);
       timingInfo.presentStageQueries = m_timingMode.presentStage;
 
-      // Try to avoid overflowing the driver-internal report queue
+      // If this is the first timed frame in a sequence, ignore older reports
+      if (!m_timingMode.firstValidFrameId)
+        m_timingMode.firstValidFrameId = frameId;
+
+      // Try to avoid overflowing the driver-internal report queue. We can still
+      // work with the existing reports for a short period of time, though.
       if (m_reportQueueAddId >= m_reportQueueTakeId + FrameQueueSize) {
         Logger::warn("Presenter: Report queue overflow");
         timingInfo.presentStageQueries = 0u;
       }
 
-      if (m_timingMode.referenceFrameId) {
+      if (m_timingMode.frameIntervalNs
+       && m_timingMode.referenceFrameId >= m_timingMode.firstValidFrameId
+       && m_timingMode.referenceFrameId + 2u * FrameQueueSize >= frameId) {
         frameTargetTime = m_timingMode.referenceTime +
           (frameId - m_timingMode.referenceFrameId) * m_timingMode.frameIntervalNs;
       }
@@ -239,13 +246,18 @@ namespace dxvk {
         timingInfo.flags |= VK_PRESENT_TIMING_INFO_PRESENT_AT_RELATIVE_TIME_BIT_EXT;
         timingInfo.targetTime = m_timingMode.frameIntervalNs;
         timingInfo.targetTimeDomainPresentStage = m_timingMode.presentStage;
-      } else if (m_timingMode.absoluteTiming && m_timingMode.referenceFrameId) {
+      } else if (m_timingMode.absoluteTiming && frameTargetTime) {
         timingInfo.targetTime = frameTargetTime;
         timingInfo.targetTimeDomainPresentStage = m_timingMode.presentStage;
 
         if (m_timingDisplayInfo && !m_timingDisplayInfo->isVariableRefresh)
           timingInfo.flags |= VK_PRESENT_TIMING_INFO_PRESENT_AT_NEAREST_REFRESH_CYCLE_BIT_EXT;
       }
+    } else {
+      // When presenting with a non-FIFO mode, ensure that we don't compute
+      // frame target times based on timings from previous FIFO usage.
+      std::lock_guard lock(m_timingMutex);
+      m_timingMode.firstValidFrameId = 0;
     }
 
     VkPresentTimingsInfoEXT timingsInfo = { VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT };
@@ -1451,6 +1463,12 @@ namespace dxvk {
     m_timingMode.relativeTiming = false;
     m_timingMode.absoluteTiming = false;
 
+    // Reset reference time and frame ID for absolute timing
+    // so that we don't end up submitting bogus timestamps.
+    m_timingMode.referenceTime = 0u;
+    m_timingMode.referenceFrameId = 0u;
+    m_timingMode.firstValidFrameId = 0u;
+
     // Can't meaningfully do timing if we don't know about display timing
     if (!m_timingDomains || !m_timingDisplayInfo || m_calibrationFailed)
       return;
@@ -1493,11 +1511,6 @@ namespace dxvk {
           m_timingMode.frameIntervalNs = (m_timingMode.frameIntervalNs + maxDeltaNs) - realDeltaNs;
       }
     }
-
-    // Reset reference time and frame ID for absolute timing
-    // so that we don't end up submitting bogus timestamps.
-    m_timingMode.referenceTime = 0u;
-    m_timingMode.referenceFrameId = 0u;
 
     // Log frame rate target like we would for the built-in limiter
     if (m_timingMode.relativeTiming || m_timingMode.absoluteTiming) {
@@ -1717,8 +1730,22 @@ namespace dxvk {
     if (!qpcTargetTime)
       return false;
 
+    auto now = dxvk::high_resolution_clock::now();
     auto dxvkTargetTime = dxvk::high_resolution_clock::get_time_from_counter(qpcTargetTime);
-    Sleep::sleepUntil(dxvk::high_resolution_clock::now(), dxvkTargetTime);
+
+    if (now >= dxvkTargetTime)
+      return true;
+
+    // If we are supposed to wait for an extremely long duration,
+    // something is probably off with our timestamps...
+    auto waitDurationMs = std::chrono::duration_cast<std::chrono::milliseconds>(dxvkTargetTime - now).count();
+
+    if (waitDurationMs > 500) {
+      Logger::err(str::format("Presenter: Target frame time is, ", waitDurationMs, " into the future, skipping wait."));
+      return false;
+    }
+
+    Sleep::sleepUntil(now, dxvkTargetTime);
     return true;
   }
 
@@ -2097,12 +2124,13 @@ namespace dxvk {
         }
       }
 
-      // If the frameis timed, wait for the calculated target time. This intentionally
-      // does not line up with vblank in fixed refresh rate scenarios and is done so
-      // that the application's render thread can see consistent frame pacing.
+      // If the frame is timed, wait for the calculated target time. This
+      // intentionally does not line up with vblank in fixed refresh rate
+      // scenarios and is done so that the application's render thread can
+      // see consistent frame pacing.
       bool waited = frame.targetTime && waitUntilFrameTargetTime(frame);
 
-      // If this doesn't apply,
+      // Legacy path, fall back to present_wait if we don't have timing.
       bool isFifoMode = frame.mode == VK_PRESENT_MODE_FIFO_KHR
                      || frame.mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
 
