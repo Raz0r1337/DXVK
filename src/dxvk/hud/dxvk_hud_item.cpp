@@ -20,7 +20,9 @@ namespace dxvk::hud {
   }
 
 
-  void HudItem::update(dxvk::high_resolution_clock::time_point time) {
+  void HudItem::update(
+          Presenter&                              presenter,
+          dxvk::high_resolution_clock::time_point time) {
     // Do nothing by default. Some items won't need this.
   }
 
@@ -68,11 +70,11 @@ namespace dxvk::hud {
   }
 
 
-  void HudItemSet::update() {
+  void HudItemSet::update(Presenter&     presenter) {
     auto time = dxvk::high_resolution_clock::now();
 
     for (const auto& item : m_items)
-      item->update(time);
+      item->update(presenter, time);
   }
 
 
@@ -181,16 +183,31 @@ namespace dxvk::hud {
   HudFpsItem::~HudFpsItem() { }
 
 
-  void HudFpsItem::update(dxvk::high_resolution_clock::time_point time) {
-    m_frameCount += 1;
-
+  void HudFpsItem::update(
+          Presenter&                              presenter,
+          dxvk::high_resolution_clock::time_point time) {
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(time - m_lastUpdate);
 
     if (elapsed.count() >= UpdateInterval) {
-      int64_t fps = (10'000'000ll * m_frameCount) / elapsed.count();
+      auto feedback = presenter.queryPresentTiming();
 
-      m_frameRate = str::format(fps / 10, ".", fps % 10);
-      m_frameCount = 0;
+      if (feedback.frameId > m_lastFeedback.frameId) {
+        uint64_t frameCount = feedback.frameId - m_lastFeedback.frameId;
+        uint64_t durationUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            dxvk::high_resolution_clock::get_time_from_counter(feedback.presentTimeHost) -
+            dxvk::high_resolution_clock::get_time_from_counter(m_lastFeedback.presentTimeHost)).count();
+
+        uint64_t fps = (double(frameCount) * double(10'000'000.0)) / double(durationUs);
+
+        m_lastFeedback = feedback;
+        m_frameRate = str::format(fps / 10, ".", fps % 10);
+      } else if (feedback.frameId < m_lastFeedback.frameId) {
+        // Reset if there's inconsistencies and re-query as soon as possible.
+        // Might happen if the presenter randomly changes for some reason.
+        m_lastFeedback = feedback;
+        m_frameRate = std::string();
+      }
+
       m_lastUpdate = time;
     }
   }
@@ -565,7 +582,9 @@ namespace dxvk::hud {
   }
 
 
-  void HudSubmissionStatsItem::update(dxvk::high_resolution_clock::time_point time) {
+  void HudSubmissionStatsItem::update(
+          Presenter&                              presenter,
+          dxvk::high_resolution_clock::time_point time) {
     DxvkStatCounters counters = m_device->getStatCounters();
     
     uint64_t currSubmitCount = counters.getCtr(DxvkStatCounter::QueueSubmitCount);
@@ -630,7 +649,9 @@ namespace dxvk::hud {
   }
 
 
-  void HudDrawCallStatsItem::update(dxvk::high_resolution_clock::time_point time) {
+  void HudDrawCallStatsItem::update(
+          Presenter&                              presenter,
+          dxvk::high_resolution_clock::time_point time) {
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(time - m_lastUpdate);
 
     DxvkStatCounters counters = m_device->getStatCounters();
@@ -692,7 +713,9 @@ namespace dxvk::hud {
   }
 
 
-  void HudPipelineStatsItem::update(dxvk::high_resolution_clock::time_point time) {
+  void HudPipelineStatsItem::update(
+          Presenter&                              presenter,
+          dxvk::high_resolution_clock::time_point time) {
     DxvkStatCounters counters = m_device->getStatCounters();
 
     m_graphicsPipelines = counters.getCtr(DxvkStatCounter::PipeCountGraphics);
@@ -737,7 +760,9 @@ namespace dxvk::hud {
   }
 
 
-  void HudDescriptorStatsItem::update(dxvk::high_resolution_clock::time_point time) {
+  void HudDescriptorStatsItem::update(
+          Presenter&                              presenter,
+          dxvk::high_resolution_clock::time_point time) {
     uint64_t ticks = std::chrono::duration_cast<std::chrono::microseconds>(time - m_lastUpdate).count();
 
     DxvkStatCounters counters = m_device->getStatCounters();
@@ -818,7 +843,9 @@ namespace dxvk::hud {
   }
 
 
-  void HudMemoryStatsItem::update(dxvk::high_resolution_clock::time_point time) {
+  void HudMemoryStatsItem::update(
+          Presenter&                              presenter,
+          dxvk::high_resolution_clock::time_point time) {
     for (uint32_t i = 0; i < m_memory.memoryHeapCount; i++)
       m_heaps[i] = m_device->getMemoryStats(i);
   }
@@ -876,7 +903,9 @@ namespace dxvk::hud {
   }
 
 
-  void HudMemoryDetailsItem::update(dxvk::high_resolution_clock::time_point time) {
+  void HudMemoryDetailsItem::update(
+          Presenter&                              presenter,
+          dxvk::high_resolution_clock::time_point time) {
     uint64_t ticks = std::chrono::duration_cast<std::chrono::microseconds>(time - m_lastUpdate).count();
 
     if (ticks >= UpdateInterval) {
@@ -1191,7 +1220,9 @@ namespace dxvk::hud {
   }
 
 
-  void HudCsThreadItem::update(dxvk::high_resolution_clock::time_point time) {
+  void HudCsThreadItem::update(
+          Presenter&                              presenter,
+          dxvk::high_resolution_clock::time_point time) {
     uint64_t ticks = std::chrono::duration_cast<std::chrono::microseconds>(time - m_lastUpdate).count();
 
     // Capture the maximum here since it's more useful to
@@ -1274,7 +1305,9 @@ namespace dxvk::hud {
   }
 
 
-  void HudGpuLoadItem::update(dxvk::high_resolution_clock::time_point time) {
+  void HudGpuLoadItem::update(
+          Presenter&                              presenter,
+          dxvk::high_resolution_clock::time_point time) {
     uint64_t ticks = std::chrono::duration_cast<std::chrono::microseconds>(time - m_lastUpdate).count();
 
     if (ticks >= UpdateInterval) {
@@ -1320,7 +1353,9 @@ namespace dxvk::hud {
   }
 
 
-  void HudCompilerActivityItem::update(dxvk::high_resolution_clock::time_point time) {
+  void HudCompilerActivityItem::update(
+          Presenter&                              presenter,
+          dxvk::high_resolution_clock::time_point time) {
     DxvkStatCounters counters = m_device->getStatCounters();
 
     m_tasksDone = counters.getCtr(DxvkStatCounter::PipeTasksDone);
@@ -1411,7 +1446,9 @@ namespace dxvk::hud {
   }
 
 
-  void HudLatencyItem::update(dxvk::high_resolution_clock::time_point time) {
+  void HudLatencyItem::update(
+          Presenter&                              presenter,
+          dxvk::high_resolution_clock::time_point time) {
     uint64_t ticks = std::chrono::duration_cast<std::chrono::microseconds>(time - m_lastUpdate).count();
 
     if (ticks >= UpdateInterval) {

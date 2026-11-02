@@ -8,7 +8,6 @@
 #include "../util/log/log.h"
 
 #include "../util/util_error.h"
-#include "../util/util_fps_limiter.h"
 #include "../util/util_math.h"
 #include "../util/util_string.h"
 
@@ -54,6 +53,15 @@ namespace dxvk {
   };
 
   /**
+   * \brief Timing info for the last presented frame
+   */
+  struct PresenterTimingFeedback {
+    uint64_t frameId = 0u;
+    uint64_t presentTimeLocal = 0u;
+    uint64_t presentTimeHost = 0u;
+  };
+
+  /**
    * \brief Queued frame
    */
   struct PresenterFrame {
@@ -61,8 +69,9 @@ namespace dxvk {
     Rc<DxvkLatencyTracker>  tracker         = nullptr;
     VkPresentModeKHR        mode            = VK_PRESENT_MODE_FIFO_KHR;
     VkResult                result          = VK_NOT_READY;
-    uint64_t                targetTime      = 0u;
-    uint64_t                targetDeadline  = 0u;
+    uint64_t                targetTimeHost  = 0u;
+    VkPresentStageFlagsEXT  targetStage     = 0u;
+    uint64_t                deadlineHost    = 0u;
     uint64_t                timingDomainId  = 0u;
     VkPresentStageFlagsEXT  stageQueries    = 0u;
   };
@@ -81,7 +90,6 @@ namespace dxvk {
    *
    * Used for timestamp calibration. Reference times are given in units
    * of nanoseconds, except for QPC which is given in raw QPC ticks.
-   * QPC will be unavailable in dxvk-native environments.
    */
   struct PresenterTimeDomain {
     VkTimeDomainKHR timeDomain = VK_TIME_DOMAIN_MAX_ENUM_KHR;
@@ -125,20 +133,8 @@ namespace dxvk {
     bool absoluteTiming = false;
     uint64_t timeDomainId = 0u;
     uint64_t frameIntervalNs = 0u;
-    uint64_t referenceTime = 0u;
-    uint64_t referenceFrameId = 0u;
-    uint64_t lastFrameTimeLocal = 0u;
-    uint64_t lastFrameTimeQpc = 0u;
-    uint64_t lastFrameId = 0u;
-    uint64_t firstValidFrameId = 0u;
-  };
-
-  /**
-   * \brief Timing info for the last presented frame
-   */
-  struct PresenterTimingFeedback {
-    uint64_t frameId = 0u;
-    uint64_t presentTime = 0u;
+    PresenterTimingFeedback reference = {};
+    PresenterTimingFeedback lastReport = {};
   };
 
   /**
@@ -427,9 +423,6 @@ namespace dxvk {
     uint64_t                    m_reportQueueAddId = 0u;
     uint64_t                    m_reportQueueTakeId = 0u;
 
-    alignas(CACHE_LINE_SIZE)
-    FpsLimiter                  m_fpsLimiter;
-
     bool                        m_hasGamescopeFenceSignalBug = false;
     bool                        m_hasNvidiaFenceSignalBug = false;
 
@@ -492,12 +485,17 @@ namespace dxvk {
             VkPresentStageFlagsEXT    queryStages);
 
     PresenterTimingFeedback commitTimingFeedback(
-      const PresenterTimingFeedback&  feedback);
+      const PresenterTimingFeedback&  feedback,
+            bool                      updateReference);
+
+    PresenterTimingFeedback computeFrameTargetTime(
+            uint64_t                  frameId) const;
 
     bool waitUntilFrameTargetTime(
       const PresenterFrame&           frame);
 
-    bool hasQpcDomain();
+    bool hasTimeDomain(
+            VkTimeDomainKHR           timeDomain) const;
 
     uint64_t translateTimestamp(
             VkTimeDomainKHR           srcTimeDomain,
@@ -525,6 +523,9 @@ namespace dxvk {
             PresenterSync&            sync);
 
     void pushFrame(const PresenterFrame& frame);
+
+    const PresenterFrame* findFrameEntry(
+            uint64_t                  frameId) const;
 
     void runFrameThread();
 
