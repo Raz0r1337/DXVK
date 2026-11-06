@@ -18,7 +18,6 @@
 
 #include "dxvk_format.h"
 #include "dxvk_image.h"
-#include "dxvk_latency.h"
 
 namespace dxvk {
 
@@ -66,7 +65,6 @@ namespace dxvk {
    */
   struct PresenterFrame {
     uint64_t                frameId         = 0u;
-    Rc<DxvkLatencyTracker>  tracker         = nullptr;
     VkPresentModeKHR        mode            = VK_PRESENT_MODE_FIFO_KHR;
     VkResult                result          = VK_NOT_READY;
     uint64_t                targetTimeHost  = 0u;
@@ -138,6 +136,17 @@ namespace dxvk {
   };
 
   /**
+   * \brief Latency stats
+   *
+   * Used for informational purposes only.
+   */
+  struct PresenterLatencyInfo {
+    uint64_t frameLatencyUs = 0u;
+    uint64_t sleepDurationUs = 0u;
+    uint64_t sleepCount = 0u;
+  };
+
+  /**
    * \brief Vulkan presenter
    * 
    * Provides abstractions for some of the
@@ -190,14 +199,14 @@ namespace dxvk {
      * 
      * Presents the last successfuly acquired image.
      * \param [in] frameId Frame number.
-     * \param [in] tracker Latency tracker
+     * \param [in] latencyFrameId Reflex frame ID
      * \param [in] rectCount Number of dirty rects
      * \param [in] rects Dirty rectangles
      * \returns Status of the operation
      */
     VkResult presentImage(
             uint64_t                frameId,
-      const Rc<DxvkLatencyTracker>& tracker,
+            uint64_t                latencyFrameId,
             uint32_t                rectCount,
       const VkRectLayerKHR*         rects);
 
@@ -209,11 +218,8 @@ namespace dxvk {
      * called before GPU work prior to the present submission has
      * completed in order to maintain consistency.
      * \param [in] frameId Frame ID
-     * \param [in] tracker Latency tracker
      */
-    void signalFrame(
-            uint64_t                frameId,
-      const Rc<DxvkLatencyTracker>& tracker);
+    void signalFrame(uint64_t frameId);
 
     /**
      * \brief Changes sync interval
@@ -293,7 +299,7 @@ namespace dxvk {
      * Any changes will be applied on the next acquire operation.
      * \param [in] sleepMode Latency mode info
      */
-    void setLatencySleepModeNv(
+    void setLatencySleepMode(
       const VkLatencySleepModeInfoNV& sleepMode);
 
     /**
@@ -303,9 +309,8 @@ namespace dxvk {
      * created with low latency support.
      * \param [in] frameId Frame ID
      * \param [in] marker Marker
-     * \returns CPU timestamp of the marker
      */
-    dxvk::high_resolution_clock::time_point setLatencyMarkerNv(
+    void setLatencyMarker(
             uint64_t                frameId,
             VkLatencyMarkerNV       marker);
 
@@ -314,9 +319,8 @@ namespace dxvk {
      *
      * Ignored if the current swapchain has not been
      * created with low latency support.
-     * \returns Sleep duration
      */
-    dxvk::high_resolution_clock::duration latencySleepNv();
+    void latencySleep();
 
     /**
      * \brief Queries latency timings
@@ -325,7 +329,7 @@ namespace dxvk {
      * \param [out] timings Latency timings
      * \returns Number of frame reports returned
      */
-    uint32_t getLatencyTimingsNv(
+    uint32_t getLatencyTimings(
             uint32_t                timingCount,
             VkLatencyTimingsFrameReportNV* timings);
 
@@ -338,6 +342,12 @@ namespace dxvk {
      * \returns Timing info for the last presented frame
      */
     PresenterTimingFeedback queryPresentTiming();
+
+    /**
+     * \brief Queries latency statistics
+     * \returns Latency statistics
+     */
+    PresenterLatencyInfo queryLatencyStats();
 
   private:
 
@@ -392,8 +402,9 @@ namespace dxvk {
     std::optional<VkLatencySleepModeInfoNV> m_latencySleepMode;
     VkSemaphore                 m_latencySemaphore = VK_NULL_HANDLE;
     uint64_t                    m_latencySleepCounter = 0u;
+    uint64_t                    m_latencySleepDurationUs = 0u;
 
-    bool                        m_latencySleepModeDirty = false;
+    std::atomic<bool>           m_latencySleepModeDirty = { false };
     bool                        m_latencySleepSupported = false;
 
     alignas(CACHE_LINE_SIZE)

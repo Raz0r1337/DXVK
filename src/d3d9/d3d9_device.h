@@ -937,8 +937,7 @@ namespace dxvk {
     void Flush();
     void FlushAndSync9On12();
 
-    void BeginFrame(Rc<DxvkLatencyTracker> LatencyTracker, uint64_t FrameId);
-    void EndFrame(Rc<DxvkLatencyTracker> LatencyTracker);
+    void EndFrame();
 
     template <uint32_t Index>
     void UpdateAnyColorWrites();

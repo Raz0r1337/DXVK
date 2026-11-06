@@ -10,7 +10,6 @@
 #include "dxvk_hang.h"
 #include "dxvk_image.h"
 #include "dxvk_instance.h"
-#include "dxvk_latency.h"
 #include "dxvk_memory.h"
 #include "dxvk_meta_clear.h"
 #include "dxvk_objects.h"
@@ -632,35 +631,23 @@ namespace dxvk {
       const Rc<DxvkShader>&         shader);
 
     /**
-     * \brief Creates latency tracker for a presenter
-     *
-     * The specicfic implementation and parameters used
-     * depend on user configuration.
-     * \param [in] presenter Presenter instance
-     */
-    Rc<DxvkLatencyTracker> createLatencyTracker(
-      const Rc<Presenter>&            presenter);
-
-    /**
      * \brief Presents a swap chain image
      * 
      * Invokes the presenter's \c presentImage method on
      * the submission thread. The status of this operation
      * can be retrieved with \ref waitForSubmission.
      * \param [in] presenter The presenter
-     * \param [in] tracker Latency tracker
      * \param [in] frameId Frame ID
+     * \param [in] latencyFrameId App-provided Reflex frame ID
      * \param [in] rectCount Number of dirty rectangles,
      * \param [in] rects Dirty rectangles
-     * \param [in] submissionId Submission timeline
      */
     void presentImage(
       const Rc<Presenter>&            presenter,
-      const Rc<DxvkLatencyTracker>&   tracker,
             uint64_t                  frameId,
+            uint64_t                  latencyFrameId,
             uint32_t                  rectCount,
-      const VkRectLayerKHR*           rects,
-            uint64_t                  submissionId);
+      const VkRectLayerKHR*           rects);
     
     /**
      * \brief Submits a command list
@@ -668,14 +655,10 @@ namespace dxvk {
      * Submits the given command list to the device using
      * the given set of optional synchronization primitives.
      * \param [in] commandList The command list to submit
-     * \param [in] tracker Latency tracker
-     * \param [in] frameId Frame ID
      * \param [in] submissionId Submission timeline
      */
     void submitCommandList(
       const Rc<DxvkCommandList>&      commandList,
-      const Rc<DxvkLatencyTracker>&   tracker,
-            uint64_t                  frameId,
             uint64_t                  submissionId);
 
     /**

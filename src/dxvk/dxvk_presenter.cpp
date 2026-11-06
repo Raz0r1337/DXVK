@@ -150,12 +150,20 @@ namespace dxvk {
     }
 
     // Apply latency sleep mode if the swapchain supports it
-    if (m_latencySleepModeDirty && m_latencySleepMode) {
-      m_latencySleepModeDirty = false;
-
+    if (m_latencySleepMode
+     && m_latencySleepModeDirty.load()
+     && m_latencySleepModeDirty.exchange(false)) {
       if (m_latencySleepSupported) {
-        m_vkd->vkSetLatencySleepModeNV(m_vkd->device(),
-          m_swapchain, &(*m_latencySleepMode));
+        auto sleepMode = m_latencySleepMode.value();
+
+        if (sleepMode.lowLatencyMode) {
+          std::unique_lock lock(m_timingMutex);
+
+          sleepMode.minimumIntervalUs = std::max(sleepMode.minimumIntervalUs,
+            uint32_t(m_timingMode.frameIntervalNs / 1000u));
+        }
+
+        m_vkd->vkSetLatencySleepModeNV(m_vkd->device(), m_swapchain, &sleepMode);
       }
     }
 
@@ -180,7 +188,7 @@ namespace dxvk {
 
   VkResult Presenter::presentImage(
           uint64_t                frameId,
-    const Rc<DxvkLatencyTracker>& tracker,
+          uint64_t                latencyFrameId,
           uint32_t                rectCount,
     const VkRectLayerKHR*         rects) {
     PresenterSync& currSync = m_semaphores.at(m_frameIndex);
@@ -278,8 +286,14 @@ namespace dxvk {
     if (m_hasIncrementalPresent && !m_presentRepaint && m_acquireStatus == VK_SUCCESS && rectCount)
       regionInfo.pNext = const_cast<void*>(std::exchange(info.pNext, &regionInfo));
 
+    if (latencyFrameId)
+      setLatencyMarker(latencyFrameId, VK_LATENCY_MARKER_PRESENT_START_NV);
+
     VkResult status = m_vkd->vkQueuePresentKHR(
       m_device->queues().graphics.queueHandle, &info);
+
+    if (latencyFrameId)
+      setLatencyMarker(latencyFrameId, VK_LATENCY_MARKER_PRESENT_END_NV);
 
     // Maintain valid state if presentation succeeded, even if we want to
     // recreate the swapchain. Spec says that 'queue' operations, i.e. the
@@ -310,7 +324,6 @@ namespace dxvk {
     // Add frame to waiter queue with current properties
     PresenterFrame frame;
     frame.frameId = frameId;
-    frame.tracker = tracker;
     frame.mode = m_presentMode;
     frame.result = status;
     frame.targetTimeHost = frameTargetTime.presentTimeHost;
@@ -350,9 +363,7 @@ namespace dxvk {
   }
 
 
-  void Presenter::signalFrame(
-          uint64_t                frameId,
-    const Rc<DxvkLatencyTracker>& tracker) {
+  void Presenter::signalFrame(uint64_t frameId) {
     if (m_signal == nullptr || !frameId)
       return;
 
@@ -416,8 +427,11 @@ namespace dxvk {
   }
 
 
-  void Presenter::setLatencySleepModeNv(
+  void Presenter::setLatencySleepMode(
     const VkLatencySleepModeInfoNV& sleepMode) {
+    if (!m_device->features().nvLowLatency2)
+      return;
+
     std::unique_lock lock(m_surfaceMutex);
 
     if (sleepMode.sType != VK_STRUCTURE_TYPE_LATENCY_SLEEP_MODE_INFO_NV)
@@ -437,21 +451,23 @@ namespace dxvk {
 
     m_dirtySwapchain |= !m_latencySleepMode;
 
-    if (m_latencySleepMode) {
-      m_latencySleepModeDirty |=
-        m_latencySleepMode->lowLatencyMode != sleepMode.lowLatencyMode ||
-        m_latencySleepMode->lowLatencyBoost != sleepMode.lowLatencyBoost ||
-        m_latencySleepMode->minimumIntervalUs != sleepMode.minimumIntervalUs;
-    }
+    if (m_latencySleepMode
+     && (m_latencySleepMode->lowLatencyMode != sleepMode.lowLatencyMode
+      || m_latencySleepMode->lowLatencyBoost != sleepMode.lowLatencyBoost
+      || m_latencySleepMode->minimumIntervalUs != sleepMode.minimumIntervalUs))
+      m_latencySleepModeDirty.store(true);
 
     m_latencySleepMode = sleepMode;
     m_latencySleepMode->pNext = nullptr;
   }
 
 
-  dxvk::high_resolution_clock::time_point Presenter::setLatencyMarkerNv(
+  void Presenter::setLatencyMarker(
           uint64_t                frameId,
           VkLatencyMarkerNV       marker) {
+    if (!m_device->features().nvLowLatency2)
+      return;
+
     std::unique_lock lock(m_surfaceMutex);
 
     if (!m_latencySleepMode) {
@@ -459,13 +475,8 @@ namespace dxvk {
       // low-latency mode, make sure we have a compatible swapchain
       m_latencySleepMode = { VK_STRUCTURE_TYPE_LATENCY_SLEEP_MODE_INFO_NV };
       m_dirtySwapchain = true;
-
-      return dxvk::high_resolution_clock::now();
+      return;
     }
-
-    // Return a CPU timestamp to correlate timestamps from
-    // latency frame reports with actual CPU timestamps
-    auto t0 = dxvk::high_resolution_clock::now();
 
     if (m_latencySleepSupported) {
       VkSetLatencyMarkerInfoNV info = { VK_STRUCTURE_TYPE_SET_LATENCY_MARKER_INFO_NV };
@@ -474,46 +485,43 @@ namespace dxvk {
 
       m_vkd->vkSetLatencyMarkerNV(m_vkd->device(), m_swapchain, &info);
     }
-
-    auto t1 = dxvk::high_resolution_clock::now();
-    return t0 + (t1 - t0) / 2u;
   }
 
 
-  dxvk::high_resolution_clock::duration Presenter::latencySleepNv() {
+  void Presenter::latencySleep() {
     std::unique_lock lock(m_surfaceMutex);
 
     if (!m_latencySleepSupported)
-      return dxvk::high_resolution_clock::duration(0u);
+      return;
 
-    if (!m_latencySemaphore) {
-      if (createLatencySemaphore() != VK_SUCCESS)
-        return dxvk::high_resolution_clock::duration(0u);
-    }
+    if (!m_latencySemaphore && createLatencySemaphore() != VK_SUCCESS)
+      return;
 
     VkLatencySleepInfoNV info = { VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV };
     info.signalSemaphore = m_latencySemaphore;
-    info.value = ++m_latencySleepCounter;
+    info.value = m_latencySleepCounter + 1u;
 
     m_vkd->vkLatencySleepNV(m_vkd->device(), m_swapchain, &info);
 
     lock.unlock();
-
-    auto t0 = dxvk::high_resolution_clock::now();
 
     VkSemaphoreWaitInfo waitInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
     waitInfo.semaphoreCount = 1;
     waitInfo.pSemaphores = &info.signalSemaphore;
     waitInfo.pValues = &info.value;
 
+    auto t0 = dxvk::high_resolution_clock::now();
     m_vkd->vkWaitSemaphores(m_vkd->device(), &waitInfo, ~0ull);
-
     auto t1 = dxvk::high_resolution_clock::now();
-    return t1 - t0;
+
+    lock.lock();
+
+    m_latencySleepCounter += 1u;
+    m_latencySleepDurationUs += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
   }
 
 
-  uint32_t Presenter::getLatencyTimingsNv(
+  uint32_t Presenter::getLatencyTimings(
           uint32_t                timingCount,
           VkLatencyTimingsFrameReportNV* timings) {
     std::unique_lock lock(m_surfaceMutex);
@@ -559,6 +567,8 @@ namespace dxvk {
 
       m_frameRateLimit = frameRate;
       updateTimingMode();
+
+      m_latencySleepModeDirty.store(true, std::memory_order_release);
     }
   }
 
@@ -603,6 +613,23 @@ namespace dxvk {
 
   PresenterTimingFeedback Presenter::queryPresentTiming() {
     return updatePresentTimingFeedback(0u, 0u);
+  }
+
+
+  PresenterLatencyInfo Presenter::queryLatencyStats() {
+    if (!m_device->features().nvLowLatency2)
+      return PresenterLatencyInfo();
+
+    VkLatencyTimingsFrameReportNV report = { VK_STRUCTURE_TYPE_LATENCY_TIMINGS_FRAME_REPORT_NV };
+    getLatencyTimings(1, &report);
+
+    std::lock_guard lock(m_surfaceMutex);
+
+    PresenterLatencyInfo result = {};
+    result.frameLatencyUs = report.gpuRenderEndTimeUs - (report.inputSampleTimeUs ? report.inputSampleTimeUs : report.simStartTimeUs);
+    result.sleepCount = m_latencySleepCounter;
+    result.sleepDurationUs = m_latencySleepDurationUs;
+    return result;
   }
 
 
@@ -2137,7 +2164,7 @@ namespace dxvk {
       bool isFifoMode = frame.mode == VK_PRESENT_MODE_FIFO_KHR
                      || frame.mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
 
-      if (isFifoMode && frame.result >= 0 && m_hasPresentWait) {
+      if (!waited && isFifoMode && frame.result >= 0 && m_hasPresentWait) {
         VkResult vr;
 
         if (m_device->features().khrPresentWait2.presentWait2) {
@@ -2153,13 +2180,6 @@ namespace dxvk {
 
         if (vr < 0 && vr != VK_ERROR_OUT_OF_DATE_KHR && vr != VK_ERROR_SURFACE_LOST_KHR)
           Logger::err(str::format("Presenter: vkWaitForPresentKHR failed: ", vr));
-      }
-
-      // Signal latency tracker right away to get more accurate
-      // measurements if the frame rate limiter is enabled.
-      if (frame.tracker) {
-        frame.tracker->notifyGpuPresentEnd(frame.frameId);
-        frame.tracker = nullptr;
       }
 
       // Update timing feedback. There is no guarantee when data becomes available,
