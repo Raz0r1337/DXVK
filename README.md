@@ -1,6 +1,24 @@
-# DXVK
+# DXVK modded for WoW
 
-A Vulkan-based translation layer for Direct3D 8/9/10/11 which allows running 3D applications on Linux using Wine.
+A version of DXVK specifically adapted to the folder structure of World of Warcraft 1.12 and 3.3.5a.
+
+Perfect for Stormhand's Project Reforged and Trimitor's WotLK 3.3.5a HD Client.
+
+A fork of [DXVK](https://github.com/doitsujin/dxvk) with the following modifications:
+
+1. **`dxvk.conf` is located in WoW's `WTF` directory.** DXVK looks for `WTF/dxvk.conf` first and falls back to `dxvk.conf` in the game directory if it does not exist. `DXVK_CONFIG_FILE` still takes precedence.
+2. **Logs are written to WoW's `Logs` folder.** If that folder does not exist, the logs are written to the game directory instead. `DXVK_LOG_PATH` still takes precedence.
+3. **The hardware cursor size is configurable.** Add the line `d3d9.enlargeHardwareCursor = 1-4` to `dxvk.conf` to enlarge or reduce the cursor:
+   - `1`: original size
+   - `2`: double size (default)
+   - `3`: triple size
+   - `4`: quadruple size
+4. **Descriptor update templates are enabled.** DXVK uses descriptor update templates in 32-bit games again, as it did up to DXVK 3.0.2, which avoids stutter caused by CPU overhead, especially on Wine. If they cause problems, add the line `dxvk.enableDescriptorUpdateTemplates = False` to `dxvk.conf`.
+5. **`Wow64.exe` is treated like `Wow.exe`.** DXVK's World of Warcraft profile, which keeps it from choosing the integrated GPU on systems that also have a dedicated one, applies to the 64-bit `Wow64.exe` as well.
+
+Releases of this fork can be found [here](https://github.com/Raz0r1337/dxvk/releases). They contain two zip archives with only the `d3d9.dll`, `DXVK-WoW-x86.zip` for the 32-bit `Wow.exe` and `DXVK-WoW-x64.zip` for the 64-bit `Wow64.exe`. The `d3d9.dll` goes into the WoW directory next to the game executable.
+
+DXVK is a Vulkan-based translation layer for Direct3D 8/9/10/11 which allows running 3D applications on Linux using Wine.
 
 For the current status of the project, please refer to the [project wiki](https://github.com/doitsujin/dxvk/wiki).
 
