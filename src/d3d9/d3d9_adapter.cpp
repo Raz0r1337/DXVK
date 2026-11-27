@@ -39,7 +39,8 @@ namespace dxvk {
           Rc<DxvkInstance> Instance,
           Rc<DxvkAdapter>  Adapter,
           UINT             Ordinal,
-          UINT             DisplayIndex)
+          UINT             DisplayIndex,
+    const char*            pDisplayName)
   : m_parent          (pParent),
     m_adapter         (Adapter),
     m_caps            (*Instance, Adapter->handle(), nullptr),
@@ -53,6 +54,9 @@ namespace dxvk {
 
     if (p9On12Args)
       m_9On12Args = *p9On12Args;
+
+    if (pDisplayName)
+      m_displayName = pDisplayName;
   }
 
 
@@ -69,7 +73,7 @@ namespace dxvk {
       return D3DERR_INVALIDCALL;
 
     WCHAR wideDisplayName[32] = { };
-    if (!wsi::getDisplayName(wsi::getDefaultMonitor(), wideDisplayName)) {
+    if (!wsi::getDisplayName(GetMonitor(), wideDisplayName)) {
       Logger::err("D3D9Adapter::GetAdapterIdentifier: Failed to query monitor info");
       return D3DERR_INVALIDCALL;
     }
@@ -407,13 +411,9 @@ namespace dxvk {
     }
 
     auto& options = m_parent->GetOptions();
-
-    const uint32_t maxShaderModel = m_parent->IsD3DCompatibile(D3DCompatibility::D3D8) ? std::min(1u, options.shaderModel)
-                                                                                       : options.shaderModel;
     const auto& limits = m_caps.getProperties().core.properties.limits;
 
-    // TODO: Actually care about what the adapter supports here.
-    // ^ For Intel and older cards most likely here.
+    const bool isExtended = m_parent->IsD3DCompatibile(D3DCompatibility::D3D9Ex);
 
     // Device Type
     pCaps->DeviceType               = DeviceType;
@@ -425,10 +425,14 @@ namespace dxvk {
     pCaps->Caps2                    = D3DCAPS2_FULLSCREENGAMMA
                                  /* | D3DCAPS2_CANCALIBRATEGAMMA */
                                  /* | D3DCAPS2_RESERVED */
-                                 /* | D3DCAPS2_CANMANAGERESOURCE */
+                                 /* | D3DCAPS2_CANMANAGERESOURCE */ //<-- Driver controls D3DPOOL_MANAGED, not advertised
                                     | D3DCAPS2_DYNAMICTEXTURES
-                                    | D3DCAPS2_CANAUTOGENMIPMAP
-                                 /* | D3DCAPS2_CANSHARERESOURCE */;
+                                    | D3DCAPS2_CANAUTOGENMIPMAP;
+
+    // Only 9Ex devices advertise D3DCAPS2_CANSHARERESOURCE
+    if (isExtended)
+      pCaps->Caps2                 |= D3DCAPS2_CANSHARERESOURCE;
+
     // Caps 3
     pCaps->Caps3                    = D3DCAPS3_ALPHA_FULLSCREEN_FLIP_OR_DISCARD
                                     | D3DCAPS3_LINEAR_TO_SRGB_PRESENTATION
@@ -486,7 +490,7 @@ namespace dxvk {
                                     | D3DPMISCCAPS_FOGVERTEXCLAMPED;
 
     // Only 9Ex devices advertise D3DPMISCCAPS_POSTBLENDSRGBCONVERT
-    if (m_parent->IsD3DCompatibile(D3DCompatibility::D3D9Ex))
+    if (isExtended)
       pCaps->PrimitiveMiscCaps     |= D3DPMISCCAPS_POSTBLENDSRGBCONVERT;
 
     // Raster Caps
@@ -532,7 +536,7 @@ namespace dxvk {
                                     | D3DPBLENDCAPS_BLENDFACTOR;
 
     // Only 9Ex devices advertise D3DPBLENDCAPS_SRCCOLOR2 and D3DPBLENDCAPS_INVSRCCOLOR2
-    if (m_parent->IsD3DCompatibile(D3DCompatibility::D3D9Ex))
+    if (isExtended)
       pCaps->SrcBlendCaps          |= D3DPBLENDCAPS_SRCCOLOR2
                                     | D3DPBLENDCAPS_INVSRCCOLOR2;
 
@@ -597,15 +601,15 @@ namespace dxvk {
                                     | D3DLINECAPS_FOG
                                     | D3DLINECAPS_ANTIALIAS; //<-- Lying about doing AA lines here, we don't *fully* support that.
     // Max Texture Width
-    pCaps->MaxTextureWidth          = MaxTextureDimension;
+    pCaps->MaxTextureWidth          = caps::MaxTextureDimension;
     // Max Texture Height
-    pCaps->MaxTextureHeight         = MaxTextureDimension;
+    pCaps->MaxTextureHeight         = caps::MaxTextureDimension;
     // Max Volume Extent
-    pCaps->MaxVolumeExtent          = 8192;
+    pCaps->MaxVolumeExtent          = caps::MaxVolumeExtent;
     // Max Texture Repeat
     pCaps->MaxTextureRepeat         = 8192;
     // Max Texture Aspect Ratio
-    pCaps->MaxTextureAspectRatio    = 8192;
+    pCaps->MaxTextureAspectRatio    = caps::MaxTextureDimension;
     // Max Anisotropy
     pCaps->MaxAnisotropy            = 16;
     // Max Vertex W
@@ -628,7 +632,7 @@ namespace dxvk {
                                     | D3DSTENCILCAPS_DECR
                                     | D3DSTENCILCAPS_TWOSIDED;
     // FVF Caps
-    pCaps->FVFCaps                  = (MaxSimultaneousTextures & D3DFVFCAPS_TEXCOORDCOUNTMASK)
+    pCaps->FVFCaps                  = (caps::MaxSimultaneousTextures & D3DFVFCAPS_TEXCOORDCOUNTMASK)
                                  /* | D3DFVFCAPS_DONOTSTRIPELEMENTS */
                                     | D3DFVFCAPS_PSIZE;
     // Texture Op Caps
@@ -659,9 +663,9 @@ namespace dxvk {
                                     | D3DTEXOPCAPS_MULTIPLYADD
                                     | D3DTEXOPCAPS_LERP;
     // Max Texture Blend Stages
-    pCaps->MaxTextureBlendStages    = MaxTextureBlendStages;
+    pCaps->MaxTextureBlendStages    = caps::MaxTextureBlendStages;
     // Max Simultaneous Textures
-    pCaps->MaxSimultaneousTextures  = MaxSimultaneousTextures;
+    pCaps->MaxSimultaneousTextures  = caps::MaxSimultaneousTextures;
     // Vertex Processing Caps
     pCaps->VertexProcessingCaps      = D3DVTXPCAPS_TEXGEN
                                      | D3DVTXPCAPS_MATERIALSOURCE7
@@ -674,7 +678,7 @@ namespace dxvk {
     // Max Active Lights
     pCaps->MaxActiveLights           = caps::MaxEnabledLights;
     // Max User Clip Planes
-    pCaps->MaxUserClipPlanes         = MaxClipPlanes;
+    pCaps->MaxUserClipPlanes         = caps::MaxClipPlanes;
     // Max Vertex Blend Matrices
     pCaps->MaxVertexBlendMatrices    = 4;
     // Max Vertex Blend Matrix Index
@@ -682,14 +686,16 @@ namespace dxvk {
     // Max Point Size
     pCaps->MaxPointSize              = limits.pointSizeRange[1];
     // Max Primitive Count
-    pCaps->MaxPrimitiveCount         = 0x00555555;
+    pCaps->MaxPrimitiveCount         = caps::MaxPrimitiveCount;
     // Max Vertex Index
-    pCaps->MaxVertexIndex            = 0x00ffffff;
+    pCaps->MaxVertexIndex            = caps::MaxVertexIndex;
     // Max Streams
-    pCaps->MaxStreams                = MaxStreams;
+    pCaps->MaxStreams                = caps::MaxStreams;
     // Max Stream Stride
-    pCaps->MaxStreamStride           = 508; // bytes
+    pCaps->MaxStreamStride           = caps::MaxStreamStride;
 
+    const uint32_t maxShaderModel = m_parent->IsD3DCompatibile(D3DCompatibility::D3D8) ? std::min(1u, options.shaderModel)
+                                                                                       : options.shaderModel;
     // Late fixed-function capable cards, such as the GeForce 4 MX series,
     // expose support for VS 1.1, while not advertising any PS support
     const uint32_t majorVersionVS = maxShaderModel == 0 ? 1 : maxShaderModel;
@@ -703,7 +709,7 @@ namespace dxvk {
     pCaps->PixelShaderVersion  = D3DPS_VERSION(majorVersionPS, minorVersionPS);
 
     // Max Vertex Shader Const
-    pCaps->MaxVertexShaderConst       = MaxFloatConstantsVS;
+    pCaps->MaxVertexShaderConst       = caps::MaxFloatConstantsVS;
     // Max PS1 Value
     pCaps->PixelShader1xMaxValue      = maxShaderModel > 0 ? std::numeric_limits<float>::max() : 0.0f;
     // Dev Caps 2
@@ -724,6 +730,16 @@ namespace dxvk {
     pCaps->AdapterOrdinalInGroup      = 0;
     // Number of adapters in current group
     pCaps->NumberOfAdaptersInGroup    = 1;
+
+    if (!m_adapterGroup.empty()) {
+      UINT ordinalInGroup = std::distance(m_adapterGroup.begin(), std::find(m_adapterGroup.begin(), m_adapterGroup.end(), this));
+
+      pCaps->MasterAdapterOrdinal     = m_adapterGroup.front()->GetOrdinal();
+      pCaps->AdapterOrdinalInGroup    = ordinalInGroup;
+      // Subordinate adapters report 0
+      pCaps->NumberOfAdaptersInGroup  = ordinalInGroup ? 0 : m_adapterGroup.size();
+    }
+
     // Decl Type Caps
     pCaps->DeclTypes                  = D3DDTCAPS_UBYTE4
                                       | D3DDTCAPS_UBYTE4N
@@ -736,7 +752,7 @@ namespace dxvk {
                                       | D3DDTCAPS_FLOAT16_2
                                       | D3DDTCAPS_FLOAT16_4;
     // Number of simultaneous RTs
-    pCaps->NumSimultaneousRTs         = MaxSimultaneousRenderTargets;
+    pCaps->NumSimultaneousRTs         = caps::MaxSimultaneousRenderTargets;
     // Possible StretchRect filters
     pCaps->StretchRectFilterCaps      = D3DPTFILTERCAPS_MINFPOINT
                                       | D3DPTFILTERCAPS_MINFLINEAR
@@ -793,6 +809,26 @@ namespace dxvk {
 
 
   HMONITOR D3D9Adapter::GetMonitor() {
+    if (m_displayName.empty())
+      return wsi::getDefaultMonitor();
+
+    for (uint32_t i = 0; ; i++) {
+      HMONITOR monitor = wsi::enumMonitors(i);
+
+      if (!monitor)
+        break;
+
+      WCHAR displayName[32] = { };
+
+      if (wsi::getDisplayName(monitor, displayName) && str::fromws(displayName) == m_displayName)
+        return monitor;
+    }
+
+    static bool s_errorShown = false;
+
+    if (!std::exchange(s_errorShown, true))
+      Logger::warn(str::format("D3D9Adapter::GetMonitor: No monitor found for ", m_displayName, ", using default monitor"));
+
     return wsi::getDefaultMonitor();
   }
 
@@ -857,7 +893,7 @@ namespace dxvk {
 
     wsi::WsiMode mode = { };
 
-    if (!wsi::getCurrentDisplayMode(wsi::getDefaultMonitor(), &mode)) {
+    if (!wsi::getCurrentDisplayMode(GetMonitor(), &mode)) {
       Logger::err("D3D9Adapter::GetAdapterDisplayModeEx: Failed to enum display settings");
       return D3DERR_INVALIDCALL;
     }
@@ -980,11 +1016,13 @@ namespace dxvk {
 
     const auto forcedRatio = Ratio<DWORD>(options.forceAspectRatio);
 
+    HMONITOR monitor = GetMonitor();
+
     wsi::WsiMode currentMode = { };
     wsi::WsiMode currentCompatibleMode = { };
 
     if (options.modeCountCompatibility) {
-      wsi::getDesktopDisplayMode(wsi::getDefaultMonitor(), &currentMode);
+      wsi::getDesktopDisplayMode(monitor, &currentMode);
 
       if (likely(currentMode.width)) {
         // Skip checking the compabilitiy refresh rate (60 Hz),
@@ -1005,7 +1043,7 @@ namespace dxvk {
 
     uint32_t modeIndex = 0;
 
-    while (wsi::getDisplayMode(wsi::getDefaultMonitor(), modeIndex++, &devMode)) {
+    while (wsi::getDisplayMode(monitor, modeIndex++, &devMode)) {
       // Skip interlaced modes altogether
       if (devMode.interlaced)
         continue;

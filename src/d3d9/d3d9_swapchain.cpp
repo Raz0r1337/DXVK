@@ -16,10 +16,12 @@ namespace dxvk {
   D3D9SwapChainEx::D3D9SwapChainEx(
           D3D9DeviceEx*          pDevice,
           D3DPRESENT_PARAMETERS* pPresentParams,
-    const D3DDISPLAYMODEEX*      pFullscreenDisplayMode)
+    const D3DDISPLAYMODEEX*      pFullscreenDisplayMode,
+          D3D9Adapter*           pAdapter)
     : D3D9SwapChainExBase(pDevice)
     , m_device           (pDevice->GetDXVKDevice())
     , m_frameLatencyCap  (pDevice->GetOptions()->maxFrameLatency)
+    , m_adapter          (pAdapter)
     , m_swapchainExt     (this) {
     this->NormalizePresentParameters(pPresentParams);
     m_presentParams = *pPresentParams;
@@ -203,7 +205,10 @@ namespace dxvk {
   #define DCX_USESTYLE 0x00010000
 
   HRESULT D3D9SwapChainEx::PresentImageGDI(HWND Window) {
-    m_parent->EndFrame();
+    m_parent->EmitCs([] (DxvkContext* ctx) {
+      ctx->endFrame();
+    });
+
     m_parent->Flush();
 
     if (!std::exchange(m_warnedAboutGDIFallback, true))
@@ -603,7 +608,7 @@ namespace dxvk {
 
       wsi::WsiMode devMode = { };
 
-      if (!wsi::getCurrentDisplayMode(wsi::getDefaultMonitor(), &devMode)) {
+      if (!wsi::getCurrentDisplayMode(m_adapter->GetMonitor(), &devMode)) {
         Logger::err("D3D9SwapChainEx::GetDisplayModeEx: Failed to enum display settings");
         return D3DERR_INVALIDCALL;
       }
@@ -642,7 +647,9 @@ namespace dxvk {
         this->LeaveFullscreenMode();
     }
     else {
-      m_parent->NotifyFullscreen(m_window, true);
+      // Device loss on focus loss only tracks head 0's window.
+      if (!IsGroupSubordinate())
+        m_parent->NotifyFullscreen(m_window, true);
 
       if (changeFullscreen) {
         hr = this->EnterFullscreenMode(pPresentParams, pFullscreenDisplayMode);
@@ -828,7 +835,7 @@ namespace dxvk {
         pPresentParams->BackBufferHeight ? nullptr : &pPresentParams->BackBufferHeight);
     }
     else {
-      wsi::getMonitorClientSize(wsi::getDefaultMonitor(),
+      wsi::getMonitorClientSize(m_adapter->GetMonitor(),
         pPresentParams->BackBufferWidth  ? nullptr : &pPresentParams->BackBufferWidth,
         pPresentParams->BackBufferHeight ? nullptr : &pPresentParams->BackBufferHeight);
     }
@@ -842,7 +849,6 @@ namespace dxvk {
 
 
   void D3D9SwapChainEx::PresentImage(UINT SyncInterval) {
-    m_parent->EndFrame();
     m_parent->Flush();
 
     // Retrieve the image and image view to present
@@ -912,6 +918,7 @@ namespace dxvk {
           cDstView, cDstRect, cSrcView, cSrcRect);
 
         // Submit command list and present
+        ctx->endFrame();
         ctx->synchronizeWsi(cSync);
         ctx->flushCommandList(nullptr, 0u);
 
@@ -1100,6 +1107,10 @@ namespace dxvk {
           frameRate = -m_displayRefreshRate / double(SyncInterval);
       }
 
+      // Head 0 paces presentation for the whole adapter group.
+      if (IsGroupSubordinate())
+        frameRate = 0.0;
+
       m_wctx->presenter->setFrameRateLimit(frameRate, GetActualFrameLatency());
       m_targetFrameRate = frameRate;
     }
@@ -1207,7 +1218,7 @@ namespace dxvk {
 
     D3D9WindowMessageFilter filter(m_window);
     
-    m_monitor = wsi::getDefaultMonitor();
+    m_monitor = m_adapter->GetMonitor();
 
     wsi::saveWindowState(m_window, &m_windowState, true);
 
@@ -1216,7 +1227,8 @@ namespace dxvk {
         return D3DERR_INVALIDCALL;
     }
     
-    m_parent->NotifyFullscreen(m_window, true);
+    if (!IsGroupSubordinate())
+      m_parent->NotifyFullscreen(m_window, true);
     
     return D3D_OK;
   }
@@ -1239,7 +1251,8 @@ namespace dxvk {
     }
     wsi::restoreWindowState(m_window, &m_windowState, false);
 
-    m_parent->NotifyFullscreen(m_window, false);
+    if (!IsGroupSubordinate())
+      m_parent->NotifyFullscreen(m_window, false);
     
     return D3D_OK;
   }
@@ -1263,10 +1276,21 @@ namespace dxvk {
 
     wsi::WsiMode wsiMode = ConvertDisplayMode(mode);
     
-    HMONITOR monitor = wsi::getDefaultMonitor();
+    HMONITOR monitor = m_adapter->GetMonitor();
 
-    if (!wsi::setWindowMode(monitor, m_window, &m_windowState, wsiMode))
+    // Only head 0 changes and restores display modes,
+    // subordinate heads are scaled to the desktop mode.
+    if (IsGroupSubordinate()) {
+      wsi::WsiMode currentMode = { };
+
+      if (wsi::getCurrentDisplayMode(monitor, &currentMode)
+       && (currentMode.width != wsiMode.width || currentMode.height != wsiMode.height)) {
+        Logger::warn(str::format("D3D9SwapChainEx::ChangeDisplayMode: Keeping desktop mode ",
+          currentMode.width, "x", currentMode.height, " for adapter group head"));
+      }
+    } else if (!wsi::setWindowMode(monitor, m_window, &m_windowState, wsiMode)) {
       return D3DERR_NOTAVAILABLE;
+    }
 
     m_displayRefreshRate = 0.0;
 
@@ -1283,12 +1307,20 @@ namespace dxvk {
   HRESULT D3D9SwapChainEx::RestoreDisplayMode(HMONITOR hMonitor) {
     if (hMonitor == nullptr)
       return D3DERR_INVALIDCALL;
+
+    // Head 0 restores every display.
+    if (IsGroupSubordinate())
+      return D3D_OK;
     
     if (!wsi::restoreDisplayMode())
       return D3DERR_NOTAVAILABLE;
 
     m_displayRefreshRateDirty = true;
     return D3D_OK;
+  }
+
+  bool D3D9SwapChainEx::IsGroupSubordinate() const {
+    return m_adapter != m_parent->GetAdapter();
   }
 
   void D3D9SwapChainEx::UpdatePresentRegion(const RECT* pSourceRect, const RECT* pDestRect) {

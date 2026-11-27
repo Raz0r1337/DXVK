@@ -162,6 +162,7 @@ namespace dxvk {
     ExportsViewport,
     ExportsStencilRef,
     ExportsSampleMask,
+    UsesSampleMask,
     UsesFragmentCoverage,
     UsesSparseResidency,
     TessellationPoints,
@@ -523,6 +524,41 @@ namespace dxvk {
       }
 
       return nullptr;
+    }
+
+    /**
+     * \brief Finds last pre-rasterization shader
+     * \returns Pointer to last pre-raster shader, if any
+     */
+    DxvkShader* findLastPreRasterShader() const {
+      DxvkShader* result = nullptr;
+
+      for (const auto& shader : m_shaders) {
+        if (shader->metadata().stage < VK_SHADER_STAGE_FRAGMENT_BIT
+         && (!result || shader->metadata().stage > result->metadata().stage))
+          result = shader.ptr();
+      }
+
+      return result;
+    }
+
+    /**
+     * \brief Checks whether the given set of shaders disables rasterization.
+     * \returns \c true if the pipeline disables rasterization.
+     */
+    bool hasRasterizerDiscard() const {
+      auto last = findLastPreRasterShader();
+
+      if (last) {
+        if (!last->metadata().flags.test(DxvkShaderFlag::ExportsPosition))
+          return true;
+
+        if (last->metadata().stage == VK_SHADER_STAGE_GEOMETRY_BIT
+         && last->metadata().rasterizedStream < 0)
+          return true;
+      }
+
+      return false;
     }
 
     /**

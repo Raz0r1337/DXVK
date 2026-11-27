@@ -1,4 +1,4 @@
-project('dxvk', ['c', 'cpp'], version : '3.1.1', meson_version : '>= 0.58', default_options : [ 'cpp_std=c++17', 'b_vscrt=static_from_buildtype', 'warning_level=2' ])
+project('dxvk', ['c', 'cpp'], version : '3.2.0', meson_version : '>= 0.58', default_options : [ 'cpp_std=c++17', 'b_vscrt=static_from_buildtype', 'warning_level=2' ])
 
 pkg = import('pkgconfig')
 cpu_family = target_machine.cpu_family()
@@ -48,12 +48,9 @@ elif not cpp.check_header('spirv/unified1/spirv.hpp')
   error('Missing SPIRV-Headers')
 endif
 
-dep_displayinfo = dependency(
-  'libdisplay-info',
-  version: ['>= 0.0.0', '< 0.2.0'],
-  fallback: ['libdisplay-info', 'di_dep'],
-  default_options: ['default_library=static'],
-)
+dep_displayinfo = dependency('libdisplay-info',
+  fallback:         ['libdisplay-info', 'di_dep'],
+  default_options:  ['default_library=static', 'pnp-ids=auto', 'tools=disabled'])
 
 if platform == 'windows'
   dxvk_so_version = {'name_prefix': ''}
@@ -170,8 +167,11 @@ else
   if lib_glfw.found()
     compiler_args += ['-DDXVK_WSI_GLFW']
   endif
-  if (not lib_sdl3.found() and not lib_sdl2.found() and not lib_glfw.found())
-    error('SDL3, SDL2, or GLFW are required to build dxvk-native')
+  if get_option('native_xcb').allowed()
+    compiler_args += ['-DDXVK_WSI_XCB']
+  endif
+  if get_option('native_wayland').allowed()
+    compiler_args += ['-DDXVK_WSI_WAYLAND']
   endif
   
   dxvk_name_prefix = 'dxvk_'

@@ -705,6 +705,9 @@ namespace dxvk {
       if (totalSize && totalSize + iter->first.size > size)
         break;
 
+      // Remove resource look-up entry
+      m_resources.erase(iter->second.resource);
+
       // Reduce number of resource evictions performed per request by
       // overestimating the amount of memory moved. May reduce stutter
       // in high-ish frame rate scenarios.
@@ -722,10 +725,11 @@ namespace dxvk {
   }
 
 
-  void DxvkRelocationList::addResource(
+  bool DxvkRelocationList::addResource(
           Rc<DxvkPagedResource>&&     resource,
     const DxvkResourceAllocation*     allocation,
-          DxvkAllocationModes         mode) {
+          DxvkAllocationModes         mode,
+          bool                        changesResidency) {
     DxvkResourceMemoryInfo key = { };
     key.offset = resource->cookie();
 
@@ -733,14 +737,40 @@ namespace dxvk {
       key = allocation->getMemoryInfo();
 
     std::lock_guard lock(m_mutex);
+
+    // Check if we already have an entry for the given resource, and
+    // decide which one to honor based on the allocation mode. We must
+    // avoid processing the same resource twice, both because relocation
+    // doesn't synchronize and because it would waste memory.
+    auto resourceEntry = m_resources.emplace(resource, key);
+
+    if (!resourceEntry.second) {
+      auto oldEntry = m_entries.find(resourceEntry.first->second);
+
+      if (oldEntry != m_entries.end()) {
+        // Prioritize eviction or residency over plain defragmentation
+        // to ensure that defragmentation doesn't cause starvation.
+        // Otherwise, prioritize the more recent request.
+        if (oldEntry->second.mode != mode && oldEntry->second.changesResidency && !changesResidency)
+          return false;
+
+        m_entries.erase(oldEntry);
+      }
+
+      resourceEntry.first->second = key;
+    }
+
     m_entries.emplace(std::piecewise_construct,
       std::forward_as_tuple(key),
-      std::forward_as_tuple(std::move(resource), mode));
+      std::forward_as_tuple(std::move(resource), mode, changesResidency));
+
+    return true;
   }
 
 
   void DxvkRelocationList::clear() {
     std::lock_guard lock(m_mutex);
+    m_resources.clear();
     m_entries.clear();
   }
 
@@ -1011,6 +1041,7 @@ namespace dxvk {
           if (!allocation) {
             if (allocationInfo.mode.isClear()) {
               logMemoryError(memoryRequirements);
+              logResourceInfo(createInfo);
               logMemoryStats();
             }
 
@@ -1080,6 +1111,7 @@ namespace dxvk {
 
       if (!allocation && allocationInfo.mode.isClear()) {
         logMemoryError(requirements.memoryRequirements);
+        logResourceInfo(createInfo);
         logMemoryStats();
       }
     } else {
@@ -1240,6 +1272,7 @@ namespace dxvk {
 
       if (allocationInfo.mode.isClear()) {
         logMemoryError(requirements.memoryRequirements);
+        logResourceInfo(createInfo);
         logMemoryStats();
       }
 
@@ -2357,7 +2390,7 @@ namespace dxvk {
     std::lock_guard lock(m_resourceMutex);
 
     m_relocations.addResource(resource, nullptr,
-      DxvkAllocationMode::NoFallback);
+      DxvkAllocationMode::NoFallback, true);
   }
 
 
@@ -2403,6 +2436,60 @@ namespace dxvk {
       else
         sstr << std::endl;
     }
+
+    Logger::err(sstr.str());
+  }
+
+
+  void DxvkMemoryAllocator::logResourceInfo(
+    const VkBufferCreateInfo& info) const {
+    VkBufferUsageFlags2 usage = info.usage;
+
+    auto next = info.pNext;
+
+    while (next) {
+      VkBaseInStructure inStruct = {};
+      std::memcpy(&inStruct, next, sizeof(inStruct));
+
+      if (inStruct.sType == VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO)
+        usage = reinterpret_cast<const VkBufferUsageFlags2CreateInfo*>(next)->usage;
+
+      next = inStruct.pNext;
+    }
+
+    std::stringstream sstr;
+    sstr << "DxvkMemoryAllocator: Buffer properties:" << std::endl
+         << "  Size:      " << info.size << std::endl
+         << "  Flags:     " << std::hex << info.flags << std::endl
+         << "  Usage:     " << std::hex << usage << std::dec << std::endl;
+
+    Logger::err(sstr.str());
+  }
+
+
+  void DxvkMemoryAllocator::logResourceInfo(
+    const VkImageCreateInfo& info) const {
+    VkExternalMemoryHandleTypeFlags handleTypes = 0u;
+
+    auto next = info.pNext;
+
+    while (next) {
+      VkBaseInStructure inStruct = {};
+      std::memcpy(&inStruct, next, sizeof(inStruct));
+
+      if (inStruct.sType == VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO)
+        handleTypes = reinterpret_cast<const VkExternalMemoryImageCreateInfo*>(next)->handleTypes;
+
+      next = inStruct.pNext;
+    }
+
+    std::stringstream sstr;
+    sstr << "DxvkMemoryAllocator: Image properties:" << std::endl
+         << "  Size:      " << info.extent.width << "x" << info.extent.height << "x" << info.extent.depth << std::endl
+         << "  Flags:     " << std::hex << info.flags << std::dec << std::endl
+         << "  Format:    " << info.format << std::endl
+         << "  Usage:     " << info.usage << std::endl
+         << "  Handles:   " << std::hex << handleTypes << std::endl;
 
     Logger::err(sstr.str());
   }
@@ -2552,7 +2639,7 @@ namespace dxvk {
       // If we can't find the resource by its cookie, it has probably
       // already been destroyed. This is fine since the allocation will
       // likely get freed soon anyway.
-      auto entry = m_resourceMap.find(a->m_resourceCookie);
+      auto entry = m_resourceMap.find(a->m_resourceCookie.load(std::memory_order_relaxed));
 
       if (entry == m_resourceMap.end())
         continue;
@@ -2566,7 +2653,7 @@ namespace dxvk {
         continue;
 
       // Acquired the resource, add it to the relocation list.
-      m_relocations.addResource(std::move(resource), a, mode);
+      m_relocations.addResource(std::move(resource), a, mode, false);
     }
   }
 
@@ -2717,6 +2804,7 @@ namespace dxvk {
       if (chunkIndex >= pool.chunks.size())
         continue;
 
+      std::unique_lock lock(m_resourceMutex);
       auto& chunk = pool.chunks[chunkIndex];
 
       // Scan resources and mark everything for eviction. If a demoted
@@ -2728,7 +2816,7 @@ namespace dxvk {
           continue;
 
         // Look up resource by its cookie
-        auto entry = m_resourceMap.find(a->m_resourceCookie);
+        auto entry = m_resourceMap.find(a->m_resourceCookie.load(std::memory_order_relaxed));
 
         if (entry == m_resourceMap.end())
           continue;
@@ -2740,8 +2828,8 @@ namespace dxvk {
           continue;
 
         if (resource->requestEviction()) {
-          m_relocations.addResource(std::move(resource), a, DxvkAllocationMode::NoDeviceMemory);
-          memoryEvicted += a->getMemoryInfo().size;
+          if (m_relocations.addResource(std::move(resource), a, DxvkAllocationMode::NoDeviceMemory, true))
+            memoryEvicted += a->getMemoryInfo().size;
         }
       }
 

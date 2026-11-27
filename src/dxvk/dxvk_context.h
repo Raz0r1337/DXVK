@@ -307,6 +307,7 @@ namespace dxvk {
 
         case VK_SHADER_STAGE_FRAGMENT_BIT:
           m_state.gp.shaders.fs = std::move(shader);
+          m_flags.set(DxvkContextFlag::GpDirtyMultisampleState);
           break;
 
         case VK_SHADER_STAGE_COMPUTE_BIT:
@@ -1312,6 +1313,8 @@ namespace dxvk {
     DxvkObjects*            m_common;
 
     uint64_t                m_frameCount = 0u;
+    bool                    m_frameCaptureActive = false;
+
     std::pair<uint64_t, uint64_t> m_framesToCapture = {};
 
     uint64_t                m_trackingId = 0u;

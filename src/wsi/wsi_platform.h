@@ -49,13 +49,13 @@ namespace dxvk::wsi {
     virtual void getWindowSize(
             HWND      hWindow,
             uint32_t* pWidth,
-            uint32_t* pWeight) = 0;
+            uint32_t* pHeight) = 0;
 
     virtual void resizeWindow(
             HWND             hWindow,
             DxvkWindowState* pState,
             uint32_t         width,
-            uint32_t         weight) = 0;
+            uint32_t         height) = 0;
 
     virtual void saveWindowState(
             HWND             hWindow,
@@ -122,6 +122,12 @@ namespace dxvk::wsi {
 #endif
 #if defined(DXVK_WSI_GLFW)
   extern WsiBootstrap GlfwWSI;
+#endif
+#if defined(DXVK_WSI_XCB)
+  extern WsiBootstrap XcbWSI;
+#endif
+#if defined(DXVK_WSI_WAYLAND)
+  extern WsiBootstrap WaylandWSI;
 #endif
 
   void init();
